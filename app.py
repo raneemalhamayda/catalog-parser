@@ -13,7 +13,7 @@ from PIL import Image as PILImage
 from pydantic import BaseModel, Field
 import streamlit as st
 
-# Set Streamlit Page Configuration
+# Page Configuration
 st.set_page_config(
     page_title="Gemini Catalog Extractor",
     page_icon="📦",
@@ -50,7 +50,7 @@ client = genai.Client(api_key=api_key)
 
 
 # -----------------------------------------------------------------------------
-# Pydantic Schemas
+# Pydantic Schemas for Structured Output
 # -----------------------------------------------------------------------------
 class ProductSpec(BaseModel):
     page_number: int = Field(
@@ -87,7 +87,6 @@ def save_uploaded_file_to_disk(uploaded_file):
     file_path = os.path.join(temp_dir, uploaded_file.name)
 
     with open(file_path, "wb") as f:
-        # Write in 4MB chunks to prevent memory spikes
         while chunk := uploaded_file.read(4 * 1024 * 1024):
             f.write(chunk)
 
@@ -121,7 +120,7 @@ def render_page_thumbnail(doc, page_num_1_based, max_size=(120, 120)):
 
 
 def create_excel_with_images(df, doc):
-    """Generates an Excel workbook with embedded page thumbnails."""
+    """Generates an Excel workbook with embedded page image thumbnails in Column A."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Product Schedule"
@@ -135,9 +134,11 @@ def create_excel_with_images(df, doc):
         excel_row = idx + 2
         ws.row_dimensions[excel_row].height = 90
 
+        # Insert extracted values into Excel starting at Column B
         for col_idx, value in enumerate(row, start=2):
             ws.cell(row=excel_row, column=col_idx, value=str(value))
 
+        # Render and attach thumbnail image in Column A
         actual_page_num = int(row.get("page_number", 1))
         pil_img = render_page_thumbnail(doc, actual_page_num)
 
@@ -158,11 +159,16 @@ def create_excel_with_images(df, doc):
 def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=3):
     """Processes a single page through Gemini API with fallback retry."""
     models_to_try = ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-1.5-flash"]
+
     prompt = f"""
-    You are analyzing Page {page_num} of a product catalog.
-    Extract every product item present on this page along with all specification details.
-    Always set `page_number` to {page_num}.
-    If this page contains no technical specifications or product details (e.g. cover page, blank page, pure marketing photo), return an empty list for `products`.
+    You are analyzing Page {page_num} of a commercial furniture/interior product catalog.
+    
+    Task:
+    1. Look for any furniture, fixture, or equipment (FF&E) items, models, or product series presented on this page.
+    2. Extract all available specifications including category, model number, dimensions (length/width/height), materials, finishes, and key features.
+    3. If dimensions or model numbers are not explicitly listed for an item, fill those specific fields with "N/A", but STILL extract the item category, materials, and description.
+    4. Set `page_number` to {page_num} for every extracted item.
+    5. Only return an empty list if the page is completely blank, a pure front cover, or contains no product items at all.
     """
 
     for model_name in models_to_try:
@@ -202,7 +208,6 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file:
     with st.spinner("Loading PDF file..."):
-        # Save chunked stream to temp path
         temp_pdf_path = save_uploaded_file_to_disk(uploaded_file)
         doc = fitz.open(temp_pdf_path)
         total_pages = len(doc)
@@ -270,6 +275,6 @@ if uploaded_file:
                 "No structured product specifications were found in the selected range."
             )
 
-        # Cleanup temp file on completion
+        # Clean up temporary disk file
         if os.path.exists(temp_pdf_path):
             os.remove(temp_pdf_path)

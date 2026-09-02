@@ -27,21 +27,17 @@ st.write(
 )
 
 # -----------------------------------------------------------------------------
-# API Client Setup
+# API Key Resolution
 # -----------------------------------------------------------------------------
 api_key = None
 
-# 1. Try reading from Streamlit Secrets
-if "GEMINI_API_KEY" in st.secrets:
-    api_key = st.secrets["GEMINI_API_KEY"]
+if "GEMINI_API_KEY" in st.secrets and st.secrets["GEMINI_API_KEY"]:
+    api_key = st.secrets["GEMINI_API_KEY"].strip()
+elif os.getenv("GEMINI_API_KEY"):
+    api_key = os.getenv("GEMINI_API_KEY").strip()
 
-# 2. Try reading from Environment Variable
 if not api_key:
-    api_key = os.getenv("GEMINI_API_KEY")
-
-# 3. Fallback to manual user input
-if not api_key:
-    api_key = st.text_input("Enter Google Gemini API Key:", type="password")
+    api_key = st.sidebar.text_input("Enter Google Gemini API Key:", type="password")
 
 if not api_key:
     st.error(
@@ -49,7 +45,10 @@ if not api_key:
     )
     st.stop()
 
-# Initialize Client explicitly with the resolved API key
+# Set environment variable explicitly for SDK fallback
+os.environ["GEMINI_API_KEY"] = api_key
+
+# Initialize Client
 client = genai.Client(api_key=api_key)
 
 
@@ -83,7 +82,7 @@ class CatalogExtraction(BaseModel):
 
 
 # -----------------------------------------------------------------------------
-# Helper Functions (Memory Optimized)
+# Helper Functions
 # -----------------------------------------------------------------------------
 def save_uploaded_file_to_disk(uploaded_file):
     """Saves uploaded file chunks directly to a temporary file on disk."""
@@ -117,7 +116,7 @@ def render_page_thumbnail(doc, page_num_1_based, max_size=(100, 100)):
         return None
 
     page = doc[page_idx]
-    pix = page.get_pixmap(dpi=72)  # Reduced DPI to lower RAM footprint
+    pix = page.get_pixmap(dpi=72)
     img = PILImage.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
     img.thumbnail(max_size)
     return img
@@ -159,14 +158,14 @@ def create_excel_with_images(df, doc):
 
 def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=3):
     """Processes a single page through Gemini API with fallback retry."""
-    models_to_try = ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-1.5-flash"]
+    models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash"]
 
     prompt = f"""
     You are analyzing Page {page_num} of a commercial furniture/interior product catalog.
     Extract every furniture, fixture, or equipment item on this page with category, model_number, dimensions, primary_materials, color_finish, and key_features.
     Set `page_number` to {page_num} for every item.
     If details are missing, set them to "N/A".
-    Only return empty list if page has zero products.
+    Only return an empty list if the page has zero products.
     """
 
     last_error = None
@@ -254,7 +253,6 @@ if uploaded_file:
             all_extracted_products.extend(page_products)
             progress_bar.progress((i + 1) / len(pages_to_process))
 
-            # Force Garbage Collection per page to release memory
             del single_bytes
             gc.collect()
 
@@ -281,7 +279,6 @@ if uploaded_file:
         else:
             st.warning("No structured product specifications were found in the selected range.")
 
-        # Close doc and delete temp file
         doc.close()
         if os.path.exists(temp_pdf_path):
             os.remove(temp_pdf_path)

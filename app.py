@@ -29,15 +29,17 @@ st.write(
 # -----------------------------------------------------------------------------
 # API Client Setup
 # -----------------------------------------------------------------------------
-api_key = os.getenv("GEMINI_API_KEY")
+api_key = None
 
+# 1. Try reading from Streamlit Secrets
+if "GEMINI_API_KEY" in st.secrets:
+    api_key = st.secrets["GEMINI_API_KEY"]
+
+# 2. Try reading from Environment Variable
 if not api_key:
-    try:
-        if "GEMINI_API_KEY" in st.secrets:
-            api_key = st.secrets["GEMINI_API_KEY"]
-    except Exception:
-        api_key = None
+    api_key = os.getenv("GEMINI_API_KEY")
 
+# 3. Fallback to manual user input
 if not api_key:
     api_key = st.text_input("Enter Google Gemini API Key:", type="password")
 
@@ -47,6 +49,7 @@ if not api_key:
     )
     st.stop()
 
+# Initialize Client explicitly with the resolved API key
 client = genai.Client(api_key=api_key)
 
 

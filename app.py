@@ -1,3 +1,4 @@
+import gc
 import io
 import json
 import os
@@ -79,7 +80,7 @@ class CatalogExtraction(BaseModel):
 
 
 # -----------------------------------------------------------------------------
-# Helper Functions
+# Helper Functions (Memory Optimized)
 # -----------------------------------------------------------------------------
 def save_uploaded_file_to_disk(uploaded_file):
     """Saves uploaded file chunks directly to a temporary file on disk."""
@@ -94,7 +95,7 @@ def save_uploaded_file_to_disk(uploaded_file):
 
 
 def extract_single_page_pdf(doc, page_num_1_based):
-    """Extracts a single page from a PyMuPDF doc and returns raw PDF bytes."""
+    """Extracts a single page from a PyMuPDF doc and cleans memory immediately."""
     new_doc = fitz.open()
     new_doc.insert_pdf(
         doc, from_page=page_num_1_based - 1, to_page=page_num_1_based - 1
@@ -106,21 +107,21 @@ def extract_single_page_pdf(doc, page_num_1_based):
     return single_bytes
 
 
-def render_page_thumbnail(doc, page_num_1_based, max_size=(120, 120)):
-    """Render a specific PDF page into a PIL Image thumbnail."""
+def render_page_thumbnail(doc, page_num_1_based, max_size=(100, 100)):
+    """Render thumbnail using low DPI and JPEG compression to save memory."""
     page_idx = page_num_1_based - 1
     if page_idx < 0 or page_idx >= len(doc):
         return None
 
     page = doc[page_idx]
-    pix = page.get_pixmap(dpi=100)
-    img = PILImage.open(io.BytesIO(pix.tobytes("png")))
+    pix = page.get_pixmap(dpi=72)  # Reduced DPI to lower RAM footprint
+    img = PILImage.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
     img.thumbnail(max_size)
     return img
 
 
 def create_excel_with_images(df, doc):
-    """Generates an Excel workbook with embedded page image thumbnails in Column A."""
+    """Generates Excel schedule with memory-friendly JPEG thumbnails."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Product Schedule"
@@ -128,28 +129,25 @@ def create_excel_with_images(df, doc):
     headers = ["Thumbnail"] + list(df.columns)
     ws.append(headers)
 
-    ws.column_dimensions["A"].width = 18
+    ws.column_dimensions["A"].width = 16
 
     for idx, row in df.iterrows():
         excel_row = idx + 2
-        ws.row_dimensions[excel_row].height = 90
+        ws.row_dimensions[excel_row].height = 80
 
-        # Insert extracted values into Excel starting at Column B
         for col_idx, value in enumerate(row, start=2):
             ws.cell(row=excel_row, column=col_idx, value=str(value))
 
-        # Render and attach thumbnail image in Column A
         actual_page_num = int(row.get("page_number", 1))
         pil_img = render_page_thumbnail(doc, actual_page_num)
 
         if pil_img:
             img_io = io.BytesIO()
-            pil_img.save(img_io, format="PNG")
+            pil_img.save(img_io, format="JPEG", quality=70)
             img_io.seek(0)
 
             img_obj = OpenPyXlImage(img_io)
-            cell_address = f"A{excel_row}"
-            ws.add_image(img_obj, cell_address)
+            ws.add_image(img_obj, f"A{excel_row}")
 
     output_stream = io.BytesIO()
     wb.save(output_stream)
@@ -162,14 +160,13 @@ def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=3):
 
     prompt = f"""
     You are analyzing Page {page_num} of a commercial furniture/interior product catalog.
-    
-    Task:
-    1. Look for any furniture, fixture, or equipment (FF&E) items, models, or product series presented on this page.
-    2. Extract all available specifications including category, model number, dimensions (length/width/height), materials, finishes, and key features.
-    3. If dimensions or model numbers are not explicitly listed for an item, fill those specific fields with "N/A", but STILL extract the item category, materials, and description.
-    4. Set `page_number` to {page_num} for every extracted item.
-    5. Only return an empty list if the page is completely blank, a pure front cover, or contains no product items at all.
+    Extract every furniture, fixture, or equipment item on this page with category, model_number, dimensions, primary_materials, color_finish, and key_features.
+    Set `page_number` to {page_num} for every item.
+    If details are missing, set them to "N/A".
+    Only return empty list if page has zero products.
     """
+
+    last_error = None
 
     for model_name in models_to_try:
         for attempt in range(max_retries):
@@ -191,11 +188,13 @@ def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=3):
                 parsed = json.loads(response.text)
                 return parsed.get("products", [])
             except Exception as e:
-                err_str = str(e)
-                if "503" in err_str or "UNAVAILABLE" in err_str:
+                last_error = str(e)
+                if "503" in last_error or "UNAVAILABLE" in last_error or "429" in last_error:
                     time.sleep((attempt + 1) * 3)
                 else:
                     break
+
+    st.sidebar.warning(f"⚠️ Page {page_num}: {last_error}")
     return []
 
 
@@ -219,9 +218,9 @@ if uploaded_file:
 
     if process_mode == "Process Sample Range":
         start_page = st.sidebar.number_input(
-            "Start Page", min_value=1, max_value=total_pages, value=1
+            "Start Page", min_value=1, max_value=total_pages, value=4
         )
-        default_end = min(start_page + 3, total_pages)
+        default_end = min(start_page + 5, total_pages)
         end_page = st.sidebar.number_input(
             "End Page",
             min_value=start_page,
@@ -232,6 +231,8 @@ if uploaded_file:
         start_page = 1
         end_page = total_pages
 
+    st.info(f"Ready to process pages **{start_page} to {end_page}** (Total: {total_pages} pages in document).")
+
     if st.button("Extract Specifications & Generate Excel", type="primary"):
         all_extracted_products = []
         progress_bar = st.progress(0)
@@ -240,15 +241,19 @@ if uploaded_file:
         pages_to_process = list(range(start_page, end_page + 1))
 
         for i, current_page in enumerate(pages_to_process):
-            status_text.text(
-                f"Processing catalog page {current_page} of {end_page}..."
-            )
+            status_text.text(f"Processing page {current_page} of {end_page}...")
             single_bytes = extract_single_page_pdf(doc, current_page)
-            page_products = process_single_page_with_retry(
-                single_bytes, current_page
-            )
+            page_products = process_single_page_with_retry(single_bytes, current_page)
+
+            if page_products:
+                st.sidebar.write(f"✅ Page {current_page}: Found {len(page_products)} item(s)")
+
             all_extracted_products.extend(page_products)
             progress_bar.progress((i + 1) / len(pages_to_process))
+
+            # Force Garbage Collection per page to release memory
+            del single_bytes
+            gc.collect()
 
         status_text.empty()
         progress_bar.empty()
@@ -271,10 +276,10 @@ if uploaded_file:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
         else:
-            st.warning(
-                "No structured product specifications were found in the selected range."
-            )
+            st.warning("No structured product specifications were found in the selected range.")
 
-        # Clean up temporary disk file
+        # Close doc and delete temp file
+        doc.close()
         if os.path.exists(temp_pdf_path):
             os.remove(temp_pdf_path)
+        gc.collect()

@@ -14,7 +14,9 @@ from PIL import Image as PILImage
 from pydantic import BaseModel, Field
 import streamlit as st
 
-# Page Configuration
+# -----------------------------------------------------------------------------
+# Streamlit Page Configuration
+# -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="Gemini Catalog Extractor",
     page_icon="📦",
@@ -27,7 +29,7 @@ st.write(
 )
 
 # -----------------------------------------------------------------------------
-# API Key Resolution
+# API Key Resolution & Client Initialization
 # -----------------------------------------------------------------------------
 api_key = None
 
@@ -45,10 +47,10 @@ if not api_key:
     )
     st.stop()
 
-# Set environment variable explicitly for SDK fallback
+# Ensure environment variable is set for SDK fallback
 os.environ["GEMINI_API_KEY"] = api_key
 
-# Initialize Client
+# Initialize Gemini Client
 client = genai.Client(api_key=api_key)
 
 
@@ -82,7 +84,7 @@ class CatalogExtraction(BaseModel):
 
 
 # -----------------------------------------------------------------------------
-# Helper Functions
+# Helper Functions (Memory & Streaming Optimized)
 # -----------------------------------------------------------------------------
 def save_uploaded_file_to_disk(uploaded_file):
     """Saves uploaded file chunks directly to a temporary file on disk."""
@@ -157,8 +159,8 @@ def create_excel_with_images(df, doc):
 
 
 def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=3):
-    """Processes a single page through Gemini API with fallback retry."""
-    models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash"]
+    """Processes a single page through Gemini API with updated model fallbacks."""
+    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash"]
 
     prompt = f"""
     You are analyzing Page {page_num} of a commercial furniture/interior product catalog.
@@ -193,6 +195,9 @@ def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=3):
                 last_error = str(e)
                 if "503" in last_error or "UNAVAILABLE" in last_error or "429" in last_error:
                     time.sleep((attempt + 1) * 3)
+                elif "404" in last_error or "NOT_FOUND" in last_error:
+                    # Move to next model if model endpoint is not found
+                    break
                 else:
                     break
 

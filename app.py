@@ -158,8 +158,8 @@ def create_excel_with_images(df, doc):
     return output_stream.getvalue()
 
 
-def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=3):
-    """Processes a single page using active Gemini Flash models and English translation instructions."""
+def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=5):
+    """Processes a single page with backoff for rate limits."""
     models_to_try = ["gemini-3.6-flash", "gemini-3.5-flash"]
 
     prompt = f"""
@@ -167,10 +167,10 @@ def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=3):
     
     Task:
     1. Extract every furniture, fixture, or equipment item listed on this page.
-    2. TRANSLATE ALL EXTRACTED TEXT (product names, category descriptions, materials, finishes, and key features) INTO ENGLISH.
+    2. TRANSLATE ALL EXTRACTED TEXT INTO ENGLISH.
     3. Output all values in English for: category, model_number, dimensions (length_mm, width_mm, height_mm), primary_materials, color_finish, and key_features.
     4. Set `page_number` to {page_num} for every item.
-    5. If details like dimensions or SKU are missing, set them to "N/A".
+    5. If details are missing, set them to "N/A".
     6. Only return an empty list if the page has zero products.
     """
 
@@ -196,8 +196,19 @@ def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=3):
                 return parsed.get("products", [])
             except Exception as e:
                 last_error = str(e)
-                if "503" in last_error or "UNAVAILABLE" in last_error or "429" in last_error or "RESOURCE_EXHAUSTED" in last_error:
-                    time.sleep((attempt + 1) * 4)
+                # Catch 429 Rate Limits / Quota Exhaustion
+                if (
+                    "429" in last_error
+                    or "RESOURCE_EXHAUSTED" in last_error
+                    or "503" in last_error
+                ):
+                    wait_time = (
+                        attempt + 1
+                    ) * 12  # Wait 12s, 24s, 36s to allow quota bucket to refill
+                    st.sidebar.info(
+                        f"⏳ Quota paused on Page {page_num}. Waiting {wait_time}s to retry..."
+                    )
+                    time.sleep(wait_time)
                 elif "404" in last_error or "NOT_FOUND" in last_error:
                     break
                 else:

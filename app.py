@@ -159,8 +159,9 @@ def create_excel_with_images(df, doc):
 
 
 def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=5):
-    """Processes a single page using active Gemini models with automatic rate limit waiting."""
-    models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash"]
+    """Processes a single page using supported Gemini Flash models with automatic rate limit retries."""
+    # Active Gemini Flash endpoints
+    models_to_try = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
 
     prompt = f"""
     You are analyzing Page {page_num} of a commercial furniture/interior product catalog.
@@ -207,6 +208,7 @@ def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=5):
                     )
                     time.sleep(wait_time)
                 elif "404" in last_error or "NOT_FOUND" in last_error:
+                    # Move to next model if endpoint is not found
                     break
                 else:
                     break

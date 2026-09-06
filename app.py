@@ -157,10 +157,10 @@ def create_excel_with_images(df, doc):
     wb.save(output_stream)
     return output_stream.getvalue()
 
-
 def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=3):
-    """Processes a single page through Gemini API with updated model fallbacks."""
-    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash"]
+    """Processes a single page through Gemini API with correct, supported model identifiers."""
+    # Official Gemini Flash model strings
+    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash"]
 
     prompt = f"""
     You are analyzing Page {page_num} of a commercial furniture/interior product catalog.
@@ -196,7 +196,7 @@ def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=3):
                 if "503" in last_error or "UNAVAILABLE" in last_error or "429" in last_error:
                     time.sleep((attempt + 1) * 3)
                 elif "404" in last_error or "NOT_FOUND" in last_error:
-                    # Move to next model if model endpoint is not found
+                    # Move directly to the next valid model identifier
                     break
                 else:
                     break

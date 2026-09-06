@@ -159,8 +159,7 @@ def create_excel_with_images(df, doc):
 
 
 def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=3):
-    """Processes a single page using active Gemini 3 models and English translation instructions."""
-    # Active Gemini Flash models
+    """Processes a single page using active Gemini Flash models and English translation instructions."""
     models_to_try = ["gemini-3.6-flash", "gemini-3.5-flash"]
 
     prompt = f"""
@@ -197,8 +196,8 @@ def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=3):
                 return parsed.get("products", [])
             except Exception as e:
                 last_error = str(e)
-                if "503" in last_error or "UNAVAILABLE" in last_error or "429" in last_error:
-                    time.sleep((attempt + 1) * 3)
+                if "503" in last_error or "UNAVAILABLE" in last_error or "429" in last_error or "RESOURCE_EXHAUSTED" in last_error:
+                    time.sleep((attempt + 1) * 4)
                 elif "404" in last_error or "NOT_FOUND" in last_error:
                     break
                 else:
@@ -263,6 +262,9 @@ if uploaded_file:
 
             del single_bytes
             gc.collect()
+
+            # Pause 2.5 seconds per page loop to remain safely under free tier API rate limits
+            time.sleep(2.5)
 
         status_text.empty()
         progress_bar.empty()

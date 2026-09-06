@@ -159,8 +159,9 @@ def create_excel_with_images(df, doc):
 
 
 def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=3):
-    """Processes a single page through Gemini API with English translation instructions."""
-    models_to_try = ["gemini-3.6-flash", "gemini-2.5-flash"]
+    """Processes a single page using active Gemini 3 models and English translation instructions."""
+    # Active Gemini Flash models
+    models_to_try = ["gemini-3.6-flash", "gemini-3.5-flash"]
 
     prompt = f"""
     You are analyzing Page {page_num} of a commercial furniture/interior product catalog.
@@ -168,11 +169,7 @@ def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=3):
     Task:
     1. Extract every furniture, fixture, or equipment item listed on this page.
     2. TRANSLATE ALL EXTRACTED TEXT (product names, category descriptions, materials, finishes, and key features) INTO ENGLISH.
-       - Example: "麦特（新）- 中班台" -> "Matt (New) - Manager Desk"
-       - Example: "主管台" -> "Executive Desk"
-       - Example: "会议台" -> "Conference Table"
-       - Example: "洽谈台" -> "Negotiation/Discussion Table"
-    3. Output the following fields in English: category, model_number, dimensions (length_mm, width_mm, height_mm), primary_materials, color_finish, and key_features.
+    3. Output all values in English for: category, model_number, dimensions (length_mm, width_mm, height_mm), primary_materials, color_finish, and key_features.
     4. Set `page_number` to {page_num} for every item.
     5. If details like dimensions or SKU are missing, set them to "N/A".
     6. Only return an empty list if the page has zero products.
@@ -194,7 +191,6 @@ def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=3):
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
                         response_schema=CatalogExtraction,
-                        temperature=0.1,
                     ),
                 )
                 parsed = json.loads(response.text)
@@ -210,6 +206,7 @@ def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=3):
 
     st.sidebar.warning(f"⚠️ Page {page_num}: {last_error}")
     return []
+
 
 # -----------------------------------------------------------------------------
 # Main Application UI

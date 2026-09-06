@@ -1,11 +1,12 @@
-import base64
 import gc
 import io
+import json
 import os
 import tempfile
 import time
 import fitz  # PyMuPDF
-from openai import OpenAI
+from google import genai
+from google.genai import types
 import openpyxl
 from openpyxl.drawing.image import Image as OpenPyXlImage
 import pandas as pd
@@ -17,12 +18,12 @@ import streamlit as st
 # Streamlit Page Configuration
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="OpenAI Catalog Extractor",
+    page_title="Gemini Catalog Extractor",
     page_icon="📦",
     layout="wide",
 )
 
-st.title("📦 Catalog Extractor (Excel with Images)")
+st.title("📦 Gemini Catalog Extractor (Excel with Images)")
 st.write(
     "Upload any product catalog PDF to extract specifications and generate an Excel schedule with embedded page thumbnails."
 )
@@ -32,22 +33,25 @@ st.write(
 # -----------------------------------------------------------------------------
 api_key = None
 
-if "OPENAI_API_KEY" in st.secrets and st.secrets["OPENAI_API_KEY"]:
-    api_key = st.secrets["OPENAI_API_KEY"].strip()
-elif os.getenv("OPENAI_API_KEY"):
-    api_key = os.getenv("OPENAI_API_KEY").strip()
+if "GEMINI_API_KEY" in st.secrets and st.secrets["GEMINI_API_KEY"]:
+    api_key = st.secrets["GEMINI_API_KEY"].strip()
+elif os.getenv("GEMINI_API_KEY"):
+    api_key = os.getenv("GEMINI_API_KEY").strip()
 
 if not api_key:
-    api_key = st.sidebar.text_input("Enter OpenAI API Key:", type="password")
+    api_key = st.sidebar.text_input("Enter Google Gemini API Key:", type="password")
 
 if not api_key:
     st.error(
-        "🔑 OpenAI API Key not found. Please set `OPENAI_API_KEY` in Streamlit Secrets."
+        "🔑 Google Gemini API Key not found. Please set `GEMINI_API_KEY` in Streamlit Secrets."
     )
     st.stop()
 
-# Initialize OpenAI Client
-client = OpenAI(api_key=api_key)
+# Ensure environment variable is set for SDK fallback
+os.environ["GEMINI_API_KEY"] = api_key
+
+# Initialize Gemini Client
+client = genai.Client(api_key=api_key)
 
 
 # -----------------------------------------------------------------------------
@@ -94,21 +98,21 @@ def save_uploaded_file_to_disk(uploaded_file):
     return file_path
 
 
-def extract_page_as_base64_jpeg(doc, page_num_1_based):
-    """Renders a single PDF page into a JPEG image encoded in base64 for OpenAI Vision."""
-    page_idx = page_num_1_based - 1
-    page = doc[page_idx]
-    pix = page.get_pixmap(dpi=150)
-
-    img = PILImage.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
-    buffer = io.BytesIO()
-    img.save(buffer, format="JPEG", quality=85)
-
-    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+def extract_single_page_pdf(doc, page_num_1_based):
+    """Extracts a single page from a PyMuPDF doc and cleans memory immediately."""
+    new_doc = fitz.open()
+    new_doc.insert_pdf(
+        doc, from_page=page_num_1_based - 1, to_page=page_num_1_based - 1
+    )
+    output_stream = io.BytesIO()
+    new_doc.save(output_stream)
+    single_bytes = output_stream.getvalue()
+    new_doc.close()
+    return single_bytes
 
 
 def render_page_thumbnail(doc, page_num_1_based, max_size=(100, 100)):
-    """Render thumbnail using low DPI and JPEG compression for Excel insertion."""
+    """Render thumbnail using low DPI and JPEG compression to save memory."""
     page_idx = page_num_1_based - 1
     if page_idx < 0 or page_idx >= len(doc):
         return None
@@ -121,7 +125,7 @@ def render_page_thumbnail(doc, page_num_1_based, max_size=(100, 100)):
 
 
 def create_excel_with_images(df, doc):
-    """Generates Excel schedule with embedded thumbnails."""
+    """Generates Excel schedule with memory-friendly JPEG thumbnails."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Product Schedule"
@@ -154,9 +158,9 @@ def create_excel_with_images(df, doc):
     return output_stream.getvalue()
 
 
-def process_single_page_with_openai(doc, page_num, max_retries=3):
-    """Processes a single page through OpenAI's gpt-4o-mini Vision with Structured Outputs."""
-    base64_image = extract_page_as_base64_jpeg(doc, page_num)
+def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=5):
+    """Processes a single page using active Gemini models with automatic rate limit waiting."""
+    models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash"]
 
     prompt = f"""
     You are analyzing Page {page_num} of a commercial furniture/interior product catalog.
@@ -172,34 +176,40 @@ def process_single_page_with_openai(doc, page_num, max_retries=3):
 
     last_error = None
 
-    for attempt in range(max_retries):
-        try:
-            completion = client.beta.chat.completions.parse(
-                model="gpt-4o-mini",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{base64_image}"
-                                },
-                            },
-                        ],
-                    }
-                ],
-                response_format=CatalogExtraction,
-            )
-            parsed_data = completion.choices[0].message.parsed
-            return parsed_data.products
-        except Exception as e:
-            last_error = str(e)
-            if "429" in last_error or "rate_limit" in last_error:
-                time.sleep((attempt + 1) * 3)
-            else:
-                break
+    for model_name in models_to_try:
+        for attempt in range(max_retries):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[
+                        types.Part.from_bytes(
+                            data=single_pdf_bytes, mime_type="application/pdf"
+                        ),
+                        prompt,
+                    ],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=CatalogExtraction,
+                    ),
+                )
+                parsed = json.loads(response.text)
+                return parsed.get("products", [])
+            except Exception as e:
+                last_error = str(e)
+                if (
+                    "429" in last_error
+                    or "RESOURCE_EXHAUSTED" in last_error
+                    or "503" in last_error
+                ):
+                    wait_time = (attempt + 1) * 10
+                    st.sidebar.info(
+                        f"⏳ Quota pause on Page {page_num}. Waiting {wait_time}s before retrying..."
+                    )
+                    time.sleep(wait_time)
+                elif "404" in last_error or "NOT_FOUND" in last_error:
+                    break
+                else:
+                    break
 
     st.sidebar.warning(f"⚠️ Page {page_num}: {last_error}")
     return []
@@ -227,7 +237,7 @@ if uploaded_file:
         start_page = st.sidebar.number_input(
             "Start Page", min_value=1, max_value=total_pages, value=1
         )
-        default_end = min(start_page + 5, total_pages)
+        default_end = min(start_page + 4, total_pages)
         end_page = st.sidebar.number_input(
             "End Page",
             min_value=start_page,
@@ -238,7 +248,9 @@ if uploaded_file:
         start_page = 1
         end_page = total_pages
 
-    st.info(f"Ready to process pages **{start_page} to {end_page}** (Total: {total_pages} pages in document).")
+    st.info(
+        f"Ready to process pages **{start_page} to {end_page}** (Total: {total_pages} pages in document)."
+    )
 
     if st.button("Extract Specifications & Generate Excel", type="primary"):
         all_extracted_products = []
@@ -249,16 +261,22 @@ if uploaded_file:
 
         for i, current_page in enumerate(pages_to_process):
             status_text.text(f"Processing page {current_page} of {end_page}...")
-            page_products = process_single_page_with_openai(doc, current_page)
+            single_bytes = extract_single_page_pdf(doc, current_page)
+            page_products = process_single_page_with_retry(single_bytes, current_page)
 
             if page_products:
-                # Convert Pydantic objects to dicts
-                products_dict = [p.model_dump() for p in page_products]
-                st.sidebar.write(f"✅ Page {current_page}: Found {len(products_dict)} item(s)")
-                all_extracted_products.extend(products_dict)
+                st.sidebar.write(
+                    f"✅ Page {current_page}: Found {len(page_products)} item(s)"
+                )
 
+            all_extracted_products.extend(page_products)
             progress_bar.progress((i + 1) / len(pages_to_process))
+
+            del single_bytes
             gc.collect()
+
+            # Pause 2.5 seconds per page to stay safely under free rate limits
+            time.sleep(2.5)
 
         status_text.empty()
         progress_bar.empty()
@@ -281,7 +299,9 @@ if uploaded_file:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
         else:
-            st.warning("No structured product specifications were found in the selected range.")
+            st.warning(
+                "No structured product specifications were found in the selected range."
+            )
 
         doc.close()
         if os.path.exists(temp_pdf_path):

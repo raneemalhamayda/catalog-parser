@@ -9,6 +9,7 @@ from google import genai
 from google.genai import types
 import openpyxl
 from openpyxl.drawing.image import Image as OpenPyXlImage
+from openpyxl.styles import Alignment, Font, PatternFill
 import pandas as pd
 from PIL import Image as PILImage
 from pydantic import BaseModel, Field
@@ -18,14 +19,14 @@ import streamlit as st
 # Streamlit Page Configuration
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Gemini Catalog Extractor",
-    page_icon="📦",
+    page_title="Finishes Schedule Generator",
+    page_icon="📋",
     layout="wide",
 )
 
-st.title("📦 Gemini Catalog Extractor (Excel with Images)")
+st.title("📋 Finishes Schedule Extractor & Generator")
 st.write(
-    "Upload any product catalog PDF to extract specifications and generate an Excel schedule with embedded page thumbnails."
+    "Upload vendor catalogs or specifications to automatically extract items and generate a pre-formatted multi-tab Finishes Schedule in Excel."
 )
 
 # -----------------------------------------------------------------------------
@@ -47,47 +48,50 @@ if not api_key:
     )
     st.stop()
 
-# Ensure environment variable is set for SDK fallback
 os.environ["GEMINI_API_KEY"] = api_key
-
-# Initialize Gemini Client
 client = genai.Client(api_key=api_key)
 
 
 # -----------------------------------------------------------------------------
-# Pydantic Schemas for Structured Output
+# Pydantic Schemas for Finishes Schedule
 # -----------------------------------------------------------------------------
-class ProductSpec(BaseModel):
+class FinishItemSpec(BaseModel):
     page_number: int = Field(
-        description="The 1-based page number of the catalog where this product appears"
+        description="The 1-based catalog page number where this finish appears"
     )
-    category: str = Field(
-        description="e.g., Task Chair, Conference Table, Executive Desk"
+    finish_type: str = Field(
+        description="Must be classified strictly into one of: Wood, Stone, Carpet, Tiling, Paint, Wallcovering, Metal, Glass & Mirror, Miscellaneous"
     )
-    model_number: str = Field(description="Model or SKU code if visible")
-    length_mm: str = Field(description="Length dimension or 'N/A'")
-    width_mm: str = Field(description="Width/Depth dimension or 'N/A'")
-    height_mm: str = Field(description="Height dimension or 'N/A'")
-    primary_materials: str = Field(description="Materials mentioned or visible")
-    color_finish: str = Field(
-        description="Color or surface finish description"
+    code: str = Field(
+        description="Finish code or designation, e.g., SK.P.01, P.01, WD.02, or 'N/A'"
     )
-    key_features: str = Field(
-        description="Brief summary of notable design features"
+    name_description: str = Field(
+        description="Full description including product name, code, material details, application instructions, and color name/RAL."
+    )
+    manufacturer: str = Field(
+        description="Manufacturer name and full contact/address details if shown, otherwise 'N/A'"
+    )
+    supplier: str = Field(
+        description="Local distributor or supplier details if listed, otherwise 'N/A'"
+    )
+    location: str = Field(
+        description="Target room or application area if mentioned, otherwise 'N/A'"
+    )
+    remarks: str = Field(
+        description="Any extra notes or technical compliance details"
     )
 
 
-class CatalogExtraction(BaseModel):
-    products: list[ProductSpec] = Field(
-        description="List of all extracted product specifications"
+class FinishesScheduleExtraction(BaseModel):
+    items: list[FinishItemSpec] = Field(
+        description="List of all extracted finish specification items"
     )
 
 
 # -----------------------------------------------------------------------------
-# Helper Functions (Memory & Streaming Optimized)
+# Helper Functions
 # -----------------------------------------------------------------------------
 def save_uploaded_file_to_disk(uploaded_file):
-    """Saves uploaded file chunks directly to a temporary file on disk."""
     temp_dir = tempfile.gettempdir()
     file_path = os.path.join(temp_dir, uploaded_file.name)
 
@@ -99,7 +103,6 @@ def save_uploaded_file_to_disk(uploaded_file):
 
 
 def extract_single_page_pdf(doc, page_num_1_based):
-    """Extracts a single page from a PyMuPDF doc and cleans memory immediately."""
     new_doc = fitz.open()
     new_doc.insert_pdf(
         doc, from_page=page_num_1_based - 1, to_page=page_num_1_based - 1
@@ -111,47 +114,130 @@ def extract_single_page_pdf(doc, page_num_1_based):
     return single_bytes
 
 
-def render_page_thumbnail(doc, page_num_1_based, max_size=(100, 100)):
-    """Render thumbnail using low DPI and JPEG compression to save memory."""
+def render_page_thumbnail(doc, page_num_1_based, max_size=(110, 110)):
     page_idx = page_num_1_based - 1
     if page_idx < 0 or page_idx >= len(doc):
         return None
 
     page = doc[page_idx]
-    pix = page.get_pixmap(dpi=72)
+    pix = page.get_pixmap(dpi=96)
     img = PILImage.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
     img.thumbnail(max_size)
     return img
 
 
-def create_excel_with_images(df, doc):
-    """Generates Excel schedule with memory-friendly JPEG thumbnails."""
+def create_formatted_schedule_excel(df, doc):
+    """Generates a multi-tab Excel workbook formatted by material type."""
     wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Product Schedule"
+    wb.remove(wb.active)  # Remove default sheet
 
-    headers = ["Thumbnail"] + list(df.columns)
-    ws.append(headers)
+    material_categories = [
+        "Wood",
+        "Stone",
+        "Carpet",
+        "Tiling",
+        "Paint",
+        "Wallcovering",
+        "Metal",
+        "Glass & Mirror",
+        "Miscellaneous",
+    ]
 
-    ws.column_dimensions["A"].width = 16
+    header_fill = PatternFill(
+        start_color="D9D9D9", end_color="D9D9D9", fill_type="solid"
+    )
+    bold_font = Font(name="Calibri", size=10, bold=True)
+    regular_font = Font(name="Calibri", size=9)
+    align_center = Alignment(
+        horizontal="center", vertical="center", wrap_text=True
+    )
+    align_left = Alignment(horizontal="left", vertical="top", wrap_text=True)
 
-    for idx, row in df.iterrows():
-        excel_row = idx + 2
-        ws.row_dimensions[excel_row].height = 80
+    headers = [
+        "TYPE",
+        "CODE",
+        "PHOTO",
+        "NAME / DESCRIPTION",
+        "MANUFACTURER",
+        "SUPPLIER",
+        "LOCATION",
+        "REMARKS",
+    ]
 
-        for col_idx, value in enumerate(row, start=2):
-            ws.cell(row=excel_row, column=col_idx, value=str(value))
+    col_widths = {
+        "A": 12,  # TYPE
+        "B": 12,  # CODE
+        "C": 18,  # PHOTO
+        "D": 35,  # NAME / DESCRIPTION
+        "E": 28,  # MANUFACTURER
+        "F": 25,  # SUPPLIER
+        "G": 28,  # LOCATION
+        "H": 20,  # REMARKS
+    }
 
-        actual_page_num = int(row.get("page_number", 1))
-        pil_img = render_page_thumbnail(doc, actual_page_num)
+    for cat in material_categories:
+        ws = wb.create_sheet(title=cat)
 
-        if pil_img:
-            img_io = io.BytesIO()
-            pil_img.save(img_io, format="JPEG", quality=70)
-            img_io.seek(0)
+        # Apply Headers
+        ws.append(headers)
+        for col_num in range(1, 9):
+            cell = ws.cell(row=1, column=col_num)
+            cell.fill = header_fill
+            cell.font = bold_font
+            cell.alignment = align_center
 
-            img_obj = OpenPyXlImage(img_io)
-            ws.add_image(img_obj, f"A{excel_row}")
+        for col_letter, width in col_widths.items():
+            ws.column_dimensions[col_letter].width = width
+
+        # Filter extracted data by material tab
+        cat_items = pd.DataFrame()
+        if not df.empty and "finish_type" in df.columns:
+            cat_items = df[
+                df["finish_type"].str.strip().str.lower() == cat.lower()
+            ]
+
+        # Populate rows
+        for idx, (_, row) in enumerate(cat_items.iterrows()):
+            excel_row = idx + 2
+            ws.row_dimensions[excel_row].height = 100
+
+            ws.cell(
+                row=excel_row, column=1, value=str(row.get("finish_type", ""))
+            ).alignment = align_center
+            ws.cell(
+                row=excel_row, column=2, value=str(row.get("code", ""))
+            ).alignment = align_center
+
+            # Photo (Thumbnail)
+            actual_page_num = int(row.get("page_number", 1))
+            pil_img = render_page_thumbnail(doc, actual_page_num)
+            if pil_img:
+                img_io = io.BytesIO()
+                pil_img.save(img_io, format="JPEG", quality=80)
+                img_io.seek(0)
+                img_obj = OpenPyXlImage(img_io)
+                ws.add_image(img_obj, f"C{excel_row}")
+
+            ws.cell(
+                row=excel_row,
+                column=4,
+                value=str(row.get("name_description", "")),
+            ).alignment = align_left
+            ws.cell(
+                row=excel_row, column=5, value=str(row.get("manufacturer", ""))
+            ).alignment = align_left
+            ws.cell(
+                row=excel_row, column=6, value=str(row.get("supplier", ""))
+            ).alignment = align_left
+            ws.cell(
+                row=excel_row, column=7, value=str(row.get("location", ""))
+            ).alignment = align_left
+            ws.cell(
+                row=excel_row, column=8, value=str(row.get("remarks", ""))
+            ).alignment = align_left
+
+            for col_idx in range(1, 9):
+                ws.cell(row=excel_row, column=col_idx).font = regular_font
 
     output_stream = io.BytesIO()
     wb.save(output_stream)
@@ -159,20 +245,19 @@ def create_excel_with_images(df, doc):
 
 
 def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=5):
-    """Processes a single page using active Gemini endpoints with automatic rate limit retries."""
-    # Active, supported Gemini Flash endpoints
     models_to_try = ["gemini-3.5-flash-lite", "gemini-2.5-flash"]
 
     prompt = f"""
-    You are analyzing Page {page_num} of a commercial furniture/interior product catalog.
+    You are analyzing Page {page_num} of a commercial interior finishes/materials catalog or specification sheet.
     
     Task:
-    1. Extract every furniture, fixture, or equipment item listed on this page.
-    2. TRANSLATE ALL EXTRACTED TEXT (product names, category descriptions, materials, finishes, and key features) INTO ENGLISH.
-    3. Output all values in English for: category, model_number, dimensions (length_mm, width_mm, height_mm), primary_materials, color_finish, and key_features.
-    4. Set `page_number` to {page_num} for every item.
-    5. If details like dimensions or SKU are missing, set them to "N/A".
-    6. Only return an empty list if the page has zero products.
+    1. Extract every finish item listed on this page.
+    2. Classify `finish_type` strictly into one of: Wood, Stone, Carpet, Tiling, Paint, Wallcovering, Metal, Glass & Mirror, Miscellaneous.
+    3. Extract or assign the finish `code` if available (e.g., SK.P.01).
+    4. Compile full technical text into `name_description` (translate any foreign text into English).
+    5. Extract `manufacturer` name, contact, and address details.
+    6. Extract `supplier`, `location`, and `remarks` if mentioned, otherwise write "N/A".
+    7. Set `page_number` to {page_num}.
     """
 
     last_error = None
@@ -190,11 +275,11 @@ def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=5):
                     ],
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
-                        response_schema=CatalogExtraction,
+                        response_schema=FinishesScheduleExtraction,
                     ),
                 )
                 parsed = json.loads(response.text)
-                return parsed.get("products", [])
+                return parsed.get("items", [])
             except Exception as e:
                 last_error = str(e)
                 if (
@@ -208,7 +293,6 @@ def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=5):
                     )
                     time.sleep(wait_time)
                 elif "404" in last_error or "NOT_FOUND" in last_error:
-                    # Fallback to the next model if 404 is encountered
                     break
                 else:
                     break
@@ -221,7 +305,7 @@ def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=5):
 # Main Application UI
 # -----------------------------------------------------------------------------
 uploaded_file = st.file_uploader(
-    "Choose a catalog PDF file (supports large files up to 500MB)", type=["pdf"]
+    "Choose a catalog or specification PDF file", type=["pdf"]
 )
 
 if uploaded_file:
@@ -230,7 +314,7 @@ if uploaded_file:
         doc = fitz.open(temp_pdf_path)
         total_pages = len(doc)
 
-    st.sidebar.header("📄 Page Processing Options")
+    st.sidebar.header("📄 Page Options")
     process_mode = st.sidebar.radio(
         "Select Range:", ["Process Sample Range", "Process Full Document"]
     )
@@ -254,8 +338,8 @@ if uploaded_file:
         f"Ready to process pages **{start_page} to {end_page}** (Total: {total_pages} pages in document)."
     )
 
-    if st.button("Extract Specifications & Generate Excel", type="primary"):
-        all_extracted_products = []
+    if st.button("Generate Finishes Schedule Excel", type="primary"):
+        all_extracted_items = []
         progress_bar = st.progress(0)
         status_text = st.empty()
 
@@ -264,46 +348,44 @@ if uploaded_file:
         for i, current_page in enumerate(pages_to_process):
             status_text.text(f"Processing page {current_page} of {end_page}...")
             single_bytes = extract_single_page_pdf(doc, current_page)
-            page_products = process_single_page_with_retry(single_bytes, current_page)
+            page_items = process_single_page_with_retry(
+                single_bytes, current_page
+            )
 
-            if page_products:
+            if page_items:
                 st.sidebar.write(
-                    f"✅ Page {current_page}: Found {len(page_products)} item(s)"
+                    f"✅ Page {current_page}: Found {len(page_items)} item(s)"
                 )
 
-            all_extracted_products.extend(page_products)
+            all_extracted_items.extend(page_items)
             progress_bar.progress((i + 1) / len(pages_to_process))
 
             del single_bytes
             gc.collect()
-
-            # Pause 2.5 seconds per page to stay safely under free rate limits
             time.sleep(2.5)
 
         status_text.empty()
         progress_bar.empty()
 
-        if all_extracted_products:
-            df = pd.DataFrame(all_extracted_products)
+        if all_extracted_items:
+            df = pd.DataFrame(all_extracted_items)
             st.success(
-                f"Extraction complete! Found {len(df)} product item(s) across pages {start_page} to {end_page}."
+                f"Extraction complete! Extracted {len(df)} item(s) across pages {start_page} to {end_page}."
             )
 
-            st.subheader("Extracted Specifications Preview")
+            st.subheader("Schedule Preview")
             st.dataframe(df, use_container_width=True)
 
-            excel_bytes = create_excel_with_images(df, doc)
+            excel_bytes = create_formatted_schedule_excel(df, doc)
 
             st.download_button(
-                label="📥 Download Excel Schedule with Images (.xlsx)",
+                label="📥 Download Multi-Tab Finishes Schedule (.xlsx)",
                 data=excel_bytes,
-                file_name=f"{os.path.splitext(uploaded_file.name)[0]}_schedule.xlsx",
+                file_name=f"{os.path.splitext(uploaded_file.name)[0]}_Finishes_Schedule.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
         else:
-            st.warning(
-                "No structured product specifications were found in the selected range."
-            )
+            st.warning("No specification items were found in the selected range.")
 
         doc.close()
         if os.path.exists(temp_pdf_path):

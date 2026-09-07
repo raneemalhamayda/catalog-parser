@@ -254,10 +254,14 @@ def process_single_page_with_retry(single_pdf_bytes, page_num, max_retries=5):
     1. Extract every finish item listed on this page.
     2. Classify `finish_type` strictly into one of: Wood, Stone, Carpet, Tiling, Paint, Wallcovering, Metal, Glass & Mirror, Miscellaneous.
     3. Extract or assign the finish `code` if available (e.g., SK.P.01).
-    4. Compile full technical text into `name_description` (translate any foreign text into English).
-    5. Extract `manufacturer` name, contact, and address details.
-    6. Extract `supplier`, `location`, and `remarks` if mentioned, otherwise write "N/A".
-    7. Set `page_number` to {page_num}.
+    4. DIMENSION FOCUS: Actively scan the page for any explicit OR implied dimensions (e.g., sheet size, tile format, roll width, thickness/depth, length, height, yield per m²). 
+       - Look for numbers followed by mm, cm, m, inches, or format notations like "60x60", "1200x600x20".
+       - If dimensions are embedded inside product text, separate them clearly and include them at the start of `name_description`.
+       - If dimensions are completely absent from the page, explicitly write "[DIMENSIONS MISSING FROM CATALOG]" inside `remarks`.
+    5. Compile full technical text into `name_description` (translate any foreign text into English).
+    6. Extract `manufacturer` name, contact, and address details.
+    7. Extract `supplier`, `location`, and `remarks` if mentioned, otherwise write "N/A".
+    8. Set `page_number` to {page_num}.
     """
 
     last_error = None

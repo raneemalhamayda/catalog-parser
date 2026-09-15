@@ -1,6 +1,6 @@
 streamlit
 pandas
-pdfplumber
 openpyxl
 google-genai
 pydantic
+PyMuPDF

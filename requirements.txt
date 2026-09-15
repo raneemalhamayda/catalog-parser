@@ -1,8 +1,8 @@
 streamlit
-PyMuPDF
-openpyxl
 pandas
-Pillow
-pydantic
-google-genai
 pdfplumber
+openpyxl
+python-pptx
+google-genai
+pydantic
+PyMuPDF

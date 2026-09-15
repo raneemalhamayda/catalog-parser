@@ -2,7 +2,3 @@ streamlit
 pandas
 pdfplumber
 openpyxl
-python-pptx
-google-genai
-pydantic
-PyMuPDF
